@@ -6,40 +6,48 @@ Project mata kuliah Internet of Things, Tema C: Manajemen Energi dan Lingkungan 
 ## Cara kerja
 - Lampu ON jika kondisi gelap **dan** ada gerak.
 - Lampu OFF setelah 30 detik tanpa gerak, atau saat kondisi terang.
-- Energi dihitung dari daya lampu x durasi ON, lalu dibandingkan dengan lampu tanpa kontrol (`baseline_wh`) untuk mendapatkan persentase penghematan (`saving_pct`).
+- Energi dihitung dari daya lampu x durasi ON, lalu dibandingkan dengan lampu tanpa kontrol (`baseline_wh`) untuk mendapatkan persentase penghematan (`saving_pct`) dan estimasi biaya (`cost_rp`, `baseline_cost_rp`).
 - Anomali: lampu ON terus-menerus lebih dari 5 menit, ditandai buzzer dan flag `anomaly`.
 
 ## Alur sistem
-LDR + PIR -> ESP32 -> WiFi -> MQTT -> Node-RED -> InfluxDB -> Grafana
+LDR + PIR -> ESP32 -> WiFi -> MQTT -> ThingsBoard Cloud (penyimpanan riwayat + dashboard)
 
 ## Komponen
 ESP32, LDR module, PIR HC-SR501, relay module, OLED SSD1306, LED (mewakili lampu), buzzer.
+Prototipe dijalankan di simulator Wokwi.
 
 ## Menjalankan firmware
-1. Salin `firmware/secrets.example.h` menjadi `firmware/secrets.h`, lalu sesuaikan isinya.
-2. Buka proyek di Wokwi (impor `firmware/diagram.json` dan `firmware/sketch.ino`) atau di Arduino IDE.
-3. Pasang library di `firmware/libraries.txt`: PubSubClient, ArduinoJson, Adafruit GFX Library, Adafruit SSD1306.
-4. Jalankan simulasi dan buka Serial Monitor.
+1. Buat device di ThingsBoard Cloud dan salin access token-nya.
+2. Salin `firmware/secrets.example.h` menjadi `firmware/secrets.h`, lalu isi `MQTT_USER` dengan access token.
+3. Buka proyek di Wokwi (impor `firmware/diagram.json` dan `firmware/sketch.ino`) atau di Arduino IDE.
+4. Pasang library di `firmware/libraries.txt`: PubSubClient, ArduinoJson, Adafruit GFX Library, Adafruit SSD1306.
+5. Jalankan simulasi dan buka Serial Monitor. Pesan `MQTT terhubung` menandakan data terkirim.
 
-`secrets.h` tidak di-commit (lihat `.gitignore`).
+`secrets.h` dan access token tidak di-commit (lihat `.gitignore`).
 
 ## MQTT
 | Item | Nilai |
 |---|---|
-| Broker | `broker.hivemq.com:1883` |
-| Topik data | `lumisave/uns25evan/data` |
-| Topik status | `lumisave/uns25evan/status` |
+| Broker | `mqtt.thingsboard.cloud:1883` |
+| Topik telemetri | `v1/devices/me/telemetry` |
+| Autentikasi | Access token device (di `secrets.h`, tidak di-commit) |
 | Interval | 5 detik |
 
 Contoh payload:
 ```json
-{"seq":13,"ts":1794749097,"lux":13.2,"pir":true,"dark":true,"relay":true,"energy_wh":0,"baseline_wh":0.099,"saving_pct":99.9,"anomaly":false,"rssi":-63}
+{"seq":13,"ts":1794749097,"lux":13.2,"pir":true,"dark":true,"relay":true,"energy_wh":0,"baseline_wh":0.099,"saving_pct":99.9,"anomaly":false,"rssi":-63,"cost_rp":0,"baseline_cost_rp":0.1430}
 ```
-Kolom: `seq` (nomor urut, untuk packet loss), `ts` (epoch detik, untuk latensi), `lux`, `pir`, `dark`, `relay`, `energy_wh`, `baseline_wh`, `saving_pct`, `anomaly`, `rssi`.
+Kolom:
+- `seq`: nomor urut, untuk menghitung packet loss
+- `ts`: epoch detik, untuk menghitung latensi
+- `lux`, `pir`, `dark`, `relay`: kondisi sensor dan lampu
+- `energy_wh`, `baseline_wh`, `saving_pct`: energi dengan kontrol, tanpa kontrol, dan persentase penghematan
+- `cost_rp`, `baseline_cost_rp`: estimasi biaya listrik (tarif di `sketch.ino`)
+- `anomaly`, `rssi`: status anomali dan kekuatan sinyal WiFi
 
 ## Struktur repositori
 - `firmware/`: kode ESP32 dan rangkaian Wokwi
-- `dashboard/`: flow Node-RED dan konfigurasi dashboard
+- `dashboard/`: ekspor dashboard ThingsBoard (JSON)
 - `data/`: data ukur lux dan okupansi
 - `docs/`: diagram, laporan, pitch deck
 
