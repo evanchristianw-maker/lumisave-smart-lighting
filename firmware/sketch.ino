@@ -19,6 +19,7 @@ const uint32_t HOLD_MS        = 30000;   // lampu OFF setelah 30 dtk tanpa gerak
 const uint32_t PUBLISH_MS     = 5000;    // interval kirim MQTT
 const uint32_t ANOMALY_MS     = 300000;  // lampu ON kontinu > 5 menit = anomali
 const float    LAMP_WATT      = 9.0;     // daya lampu dari label
+const float    TARIF_RP_KWH   = 1444.70; // cek ulang tarif resmi PLN
 
 // Konstanta LDR Wokwi (datasheet LDR module)
 const float GAMMA = 0.7;
@@ -32,7 +33,7 @@ bool lampOn = false, anomaly = false;
 uint32_t lastMotion = 0, lampOnSince = 0, lastTick = 0, lastPub = 0, lastReconnect = 0, seq = 0;
 double energyWh = 0, baselineWh = 0;  // energi dengan kontrol vs lampu tanpa kontrol (ON sepanjang gelap)
 
-String tData, tStatus;
+String tData;
 
 float readLux() {
   int adc = analogRead(PIN_LDR);
@@ -54,10 +55,10 @@ void reconnectMqtt() {
   if (mqtt.connected() || millis() - lastReconnect < 5000) return;
   lastReconnect = millis();
   if (WiFi.status() != WL_CONNECTED) { connectWifi(); return; }
-  const char* user = strlen(MQTT_USER) ? MQTT_USER : nullptr;
-  const char* pass = strlen(MQTT_PASS) ? MQTT_PASS : nullptr;
-  if (mqtt.connect(MQTT_CLIENT_ID, user, pass, tStatus.c_str(), 0, true, "offline")) {
-    mqtt.publish(tStatus.c_str(), "online", true);
+  if (mqtt.connect(MQTT_CLIENT_ID, MQTT_USER, nullptr)) {
+    Serial.println("MQTT terhubung");
+  } else {
+    Serial.printf("MQTT gagal, state=%d\n", mqtt.state());
   }
 }
 
@@ -85,7 +86,9 @@ void publishData(float lux, bool pir, bool dark) {
   d["saving_pct"] = baselineWh > 0 ? round((1.0 - energyWh / baselineWh) * 1000) / 10.0 : 0;
   d["anomaly"] = anomaly;
   d["rssi"] = WiFi.RSSI();
-  char buf[320];
+  d["cost_rp"] = round(energyWh / 1000.0 * TARIF_RP_KWH * 10000) / 10000.0;
+  d["baseline_cost_rp"] = round(baselineWh / 1000.0 * TARIF_RP_KWH * 10000) / 10000.0;
+  char buf[400];
   size_t n = serializeJson(d, buf);
   mqtt.publish(tData.c_str(), (const uint8_t*)buf, n, false);
   Serial.println(buf);
@@ -100,10 +103,10 @@ void setup() {
   oled.begin(SSD1306_SWITCHCAPVCC, 0x3C);
   oled.setTextSize(1);
   oled.setTextColor(SSD1306_WHITE);
-  tData = String(MQTT_TOPIC_PREFIX) + "/data";
-  tStatus = String(MQTT_TOPIC_PREFIX) + "/status";
+  tData = "v1/devices/me/telemetry";
   connectWifi();
   mqtt.setServer(MQTT_HOST, MQTT_PORT);
+  mqtt.setBufferSize(512);
   lastTick = millis();
 }
 
