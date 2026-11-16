@@ -1,4 +1,4 @@
 secrets.h
-firmware/secrets.h
+firmware/secrets.example.h
 .env
 *.pem
