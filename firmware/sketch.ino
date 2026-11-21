@@ -1,51 +1,60 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
-#include <Wire.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
 #include <time.h>
 #include "secrets.h"
 
 // ---------- Pin ----------
 #define PIN_LDR    34
 #define PIN_PIR    27
-#define PIN_RELAY  26
-#define PIN_BUZZER 25
+#define PIN_RELAY  26   // LED simulasi via resistor 220 Ohm ke GND
+#define PIN_BUZZER 25   // Buzzer 1 (+) ke D25, (-) ke GND
 
-// ---------- Parameter (justifikasi di laporan) ----------
-const float    LUX_DARK       = 50.0;    // lampu boleh ON jika lux < nilai ini (ganti dengan hasil ukur lapangan)
-const uint32_t HOLD_MS        = 30000;   // lampu OFF setelah 30 dtk tanpa gerak
-const uint32_t PUBLISH_MS     = 5000;    // interval kirim MQTT
-const uint32_t ANOMALY_MS     = 300000;  // lampu ON kontinu > 5 menit = anomali
-const float    LAMP_WATT      = 9.0;     // daya lampu dari label
-const float    TARIF_RP_KWH   = 1444.70; // cek ulang tarif resmi PLN
+#define RELAY_ON   HIGH
+#define RELAY_OFF  LOW
 
-// Konstanta LDR Wokwi (datasheet LDR module)
-const float GAMMA = 0.7;
-const float RL10  = 50;
+// ---------- Parameter ----------
+const float    LUX_DARK      = 50.0;    // Ambang batas gelap
+const uint32_t HOLD_MS       = 5000;    // Lampu OFF setelah 5 dtk tanpa gerak
+const uint32_t PUBLISH_MS    = 5000;    // Interval kirim MQTT
+const uint32_t ANOMALY_MS    = 300000;  // Lampu ON kontinu > 5 menit = anomali
+const uint32_t PIR_WARMUP_MS = 15000;   // PIR diabaikan 15 dtk pertama (pemanasan)
+const float    LAMP_WATT     = 9.0;     // Daya lampu (Watt)
+const float    TARIF_RP_KWH  = 1444.70; // Tarif listrik per kWh
 
-Adafruit_SSD1306 oled(128, 64, &Wire, -1);
+// ---------- Kalibrasi LDR ----------
+const int   CAL_N = 5;
+const int   CAL_ADC[CAL_N] = {100, 800, 1800, 2800, 3800};
+const float CAL_LUX[CAL_N] = {900, 300, 80, 20, 2};
+
 WiFiClient wifi;
 PubSubClient mqtt(wifi);
 
-bool lampOn = false, anomaly = false;
+bool lampOn = false, anomaly = false, pirLatched = false;
 uint32_t lastMotion = 0, lampOnSince = 0, lastTick = 0, lastPub = 0, lastReconnect = 0, seq = 0;
-double energyWh = 0, baselineWh = 0;  // energi dengan kontrol vs lampu tanpa kontrol (ON sepanjang gelap)
+double energyWh = 0, baselineWh = 0;
 
-String tData;
+String tData = "v1/devices/me/telemetry";
 
-float readLux() {
-  int adc = analogRead(PIN_LDR);
-  float v = adc / 4095.0 * 5.0;
-  if (v >= 4.99) v = 4.99;
-  float r = 2000.0 * v / (1.0 - v / 5.0);
-  if (r <= 0) return 100000;
-  return pow(RL10 * 1e3 * pow(10, GAMMA) / r, 1.0 / GAMMA);
+int readAdc() {
+  long s = 0;
+  for (int i = 0; i < 16; i++) { s += analogRead(PIN_LDR); delay(2); }
+  return s / 16;
+}
+
+float adcToLux(int adc) {
+  if (adc <= CAL_ADC[0]) return CAL_LUX[0];
+  for (int i = 1; i < CAL_N; i++) {
+    if (adc <= CAL_ADC[i]) {
+      float f = (adc - CAL_ADC[i - 1]) / (float)(CAL_ADC[i] - CAL_ADC[i - 1]);
+      return CAL_LUX[i - 1] + f * (CAL_LUX[i] - CAL_LUX[i - 1]);
+    }
+  }
+  return CAL_LUX[CAL_N - 1];
 }
 
 void connectWifi() {
-  WiFi.begin(WIFI_SSID, WIFI_PASS, 6);
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
   uint32_t t = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - t < 15000) delay(250);
   configTime(0, 0, "pool.ntp.org");
@@ -62,23 +71,14 @@ void reconnectMqtt() {
   }
 }
 
-void beep(int ms) { digitalWrite(PIN_BUZZER, HIGH); delay(ms); digitalWrite(PIN_BUZZER, LOW); }
-
-void drawOled(float lux, bool pir) {
-  oled.clearDisplay();
-  oled.setCursor(0, 0);
-  oled.printf("LumiSave\nLux : %.0f\nPIR : %s\nLamp: %s\nE   : %.3f Wh\nBase: %.3f Wh\n%s",
-              lux, pir ? "GERAK" : "-", lampOn ? "ON" : "OFF", energyWh, baselineWh,
-              anomaly ? "!! ANOMALI" : (mqtt.connected() ? "MQTT OK" : "MQTT --"));
-  oled.display();
-}
-
-void publishData(float lux, bool pir, bool dark) {
+void publishData(int adc, float lux, bool pir, bool dark) {
   JsonDocument d;
   d["seq"] = ++seq;
   d["ts"] = (uint32_t)time(nullptr);
+  d["adc"] = adc;
   d["lux"] = round(lux * 10) / 10.0;
   d["pir"] = pir;
+  d["motion_status"] = pir ? 1 : 0;
   d["dark"] = dark;
   d["relay"] = lampOn;
   d["energy_wh"] = round(energyWh * 1000) / 1000.0;
@@ -86,9 +86,10 @@ void publishData(float lux, bool pir, bool dark) {
   d["saving_pct"] = baselineWh > 0 ? round((1.0 - energyWh / baselineWh) * 1000) / 10.0 : 0;
   d["anomaly"] = anomaly;
   d["rssi"] = WiFi.RSSI();
-  d["cost_rp"] = round(energyWh / 1000.0 * TARIF_RP_KWH * 10000) / 10000.0;
-  d["baseline_cost_rp"] = round(baselineWh / 1000.0 * TARIF_RP_KWH * 10000) / 10000.0;
-  char buf[400];
+  d["cost_rp"] = round((energyWh / 1000.0) * TARIF_RP_KWH * 10000) / 10000.0;
+  d["baseline_cost_rp"] = round((baselineWh / 1000.0) * TARIF_RP_KWH * 10000) / 10000.0;
+
+  char buf[450];
   size_t n = serializeJson(d, buf);
   mqtt.publish(tData.c_str(), (const uint8_t*)buf, n, false);
   Serial.println(buf);
@@ -99,11 +100,9 @@ void setup() {
   pinMode(PIN_PIR, INPUT);
   pinMode(PIN_RELAY, OUTPUT);
   pinMode(PIN_BUZZER, OUTPUT);
-  digitalWrite(PIN_RELAY, LOW);
-  oled.begin(SSD1306_SWITCHCAPVCC, 0x3C);
-  oled.setTextSize(1);
-  oled.setTextColor(SSD1306_WHITE);
-  tData = "v1/devices/me/telemetry";
+  digitalWrite(PIN_RELAY, RELAY_OFF);
+  digitalWrite(PIN_BUZZER, LOW);
+
   connectWifi();
   mqtt.setServer(MQTT_HOST, MQTT_PORT);
   mqtt.setBufferSize(512);
@@ -115,19 +114,32 @@ void loop() {
   mqtt.loop();
 
   uint32_t now = millis();
-  float lux = readLux();
+  int adc = readAdc();
+  float lux = adcToLux(adc);
   bool dark = lux < LUX_DARK;
-  bool pir = digitalRead(PIN_PIR);
+  bool pir = digitalRead(PIN_PIR) && (now > PIR_WARMUP_MS);
 
-  // Logika: gelap DAN gerak -> ON; OFF jika terang atau tanpa gerak > HOLD_MS
+  if (pir) pirLatched = true;
+
+  // Logika: Gelap DAN Gerak -> ON; OFF jika Terang atau tanpa gerak > 5 detik
   if (dark && pir) {
     lastMotion = now;
-    if (!lampOn) { lampOn = true; lampOnSince = now; beep(80); }
+    if (!lampOn) { lampOn = true; lampOnSince = now; }
   }
-  if (lampOn && (!dark || now - lastMotion > HOLD_MS)) { lampOn = false; anomaly = false; }
+  if (lampOn && (!dark || now - lastMotion > HOLD_MS)) {
+    lampOn = false;
+    anomaly = false;
+  }
+
   anomaly = lampOn && (now - lampOnSince > ANOMALY_MS);
-  digitalWrite(PIN_RELAY, lampOn ? HIGH : LOW);
-  if (anomaly && (now / 1000) % 2 == 0) digitalWrite(PIN_BUZZER, HIGH); else digitalWrite(PIN_BUZZER, LOW);
+  digitalWrite(PIN_RELAY, lampOn ? RELAY_ON : RELAY_OFF);
+
+  // Buzzer bunyi singkat sekali (200 ms) saat lampu baru menyala
+  if (lampOn && (now - lampOnSince < 200)) {
+    digitalWrite(PIN_BUZZER, HIGH);
+  } else {
+    digitalWrite(PIN_BUZZER, LOW);
+  }
 
   // Akumulasi energi (Wh)
   double dtH = (now - lastTick) / 3600000.0;
@@ -137,8 +149,8 @@ void loop() {
 
   if (now - lastPub >= PUBLISH_MS) {
     lastPub = now;
-    if (mqtt.connected()) publishData(lux, pir, dark);
-    drawOled(lux, pir);
+    if (mqtt.connected()) publishData(adc, lux, pirLatched, dark);
+    pirLatched = false;
   }
   delay(50);
 }
