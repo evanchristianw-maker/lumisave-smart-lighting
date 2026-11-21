@@ -13,8 +13,8 @@ Project mata kuliah Internet of Things, Tema C: Manajemen Energi dan Lingkungan 
 LDR + PIR -> ESP32 -> WiFi -> MQTT -> ThingsBoard Cloud (penyimpanan riwayat + dashboard)
 
 ## Komponen
-ESP32, LDR module, PIR HC-SR501, relay module, OLED SSD1306, LED (mewakili lampu), buzzer.
-Prototipe dijalankan di simulator Wokwi.
+ESP32, LDR module, PIR HC-SR501, LED (mewakili lampu) + resistor 220Ω, buzzer.
+Prototipe dijalankan di simulator Wokwi, serta implementasi menggunakan real device
 
 ## Menjalankan firmware
 1. Buat device di ThingsBoard Cloud dan salin access token-nya.
