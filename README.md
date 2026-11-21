@@ -5,7 +5,7 @@ Project mata kuliah Internet of Things, Tema C: Manajemen Energi dan Lingkungan 
 
 ## Cara kerja
 - Lampu ON jika kondisi gelap **dan** ada gerak.
-- Lampu OFF setelah 30 detik tanpa gerak, atau saat kondisi terang.
+- Lampu OFF setelah 5 detik tanpa gerak, atau saat kondisi terang.
 - Energi dihitung dari daya lampu x durasi ON, lalu dibandingkan dengan lampu tanpa kontrol (`baseline_wh`) untuk mendapatkan persentase penghematan (`saving_pct`) dan estimasi biaya (`cost_rp`, `baseline_cost_rp`).
 - Anomali: lampu ON terus-menerus lebih dari 5 menit, ditandai buzzer dan flag `anomaly`.
 
