@@ -14,7 +14,7 @@
 #define RELAY_OFF  LOW
 
 // ---------- Parameter ----------
-const float    LUX_DARK      = 50.0;    // Ambang batas gelap
+const float    LUX_DARK      = 20.0;    // Ambang batas gelap
 const uint32_t HOLD_MS       = 10000;    // Lampu OFF setelah 10 dtk tanpa gerak
 const uint32_t PUBLISH_MS    = 5000;    // Interval kirim MQTT
 const uint32_t ANOMALY_MS    = 300000;  // Lampu ON kontinu > 5 menit = anomali
